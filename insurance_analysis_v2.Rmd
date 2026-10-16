@@ -1,0 +1,194 @@
+---
+title: "Insurance Charges Analysis"
+author: "Samira Ouattara"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+---
+
+
+# Introduction
+
+Health insurers set prices based on how much they expect to pay out in claims. This analysis looks at what drives individual insurance charges.
+
+The dataset has 1,338 people with their age, sex, BMI, number of children, smoking status, region, and yearly insurance charges.
+
+The goal is to answer two questions:
+
+- Which factors are related to higher charges?
+- How much does each factor change the charges?
+
+I start by exploring the data with counts and plots, then check correlations, and finish with two regression models: a log-linear model and a Gamma GLM.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(dplyr)
+library(readr)
+library(ggplot2)
+```
+
+# Load and check the data
+
+```{r load}
+df <- read_csv("insurance.csv")
+head(df)
+colSums(is.na(df))
+summary(df)
+```
+
+No missing values. Ages range from 18 to 64.
+
+# Explore
+
+```{r counts}
+df %>% count(sex)
+df %>% count(region)
+df %>% count(children)
+```
+Count each category: 662 female and 676 male, so the sexes are balanced
+We have four regions and number of children from 1 through 5
+
+## Distributions
+
+Histogram of charges: right-skewed, most people have low charges
+and a few have very high ones (this is why we log it later)
+
+```{r dist}
+ggplot(df, aes(x = charges)) +
+  geom_histogram(bins = 30)
+
+ggplot(df, aes(x = age)) +
+  geom_histogram(bins = 30)
+
+```
+
+## Charges by group
+
+Scatterplot of age vs charges: charges tend to rise with age
+
+```{r groups}
+ggplot(df, aes(x = sex, y = charges)) +
+  geom_boxplot()
+
+ggplot(df, aes(x = age, y = charges)) +
+  geom_point(alpha = 0.4)
+```
+
+## Pie charts
+
+Pie charts: share of each group for sex, region, smoker and children
+
+```{r pie, fig.show="hold", out.width="50%"}
+pie(table(df$sex))
+pie(table(df$region))
+pie(table(df$smoker))
+pie(table(df$children))
+```
+
+# Correlations
+
+## Are children related to charges?
+
+```{r cor-children}
+cor.test(df$children, df$charges)
+```
+
+Weak link. The correlation is only 0.07. The p-value (0.013) says it is
+not zero, but the effect is too small to matter on its own.
+
+## Is age related to charges?
+
+```{r cor-age}
+cor.test(df$age, df$charges)
+```
+
+Moderate positive link (0.30). Older people tend to pay more.
+The p-value is almost zero, so this is a real pattern, not noise.
+
+
+## What about smoking?
+
+Smoking is coded 1 for yes and 0 for no so we can correlate it.
+```{r cor-smoker}
+df$smoker_num <- ifelse(df$smoker == "yes", 1, 0)
+cor.test(df$smoker_num, df$charges)
+```
+
+Strong positive link (0.79). Smokers pay much more.
+Smoking alone explains about 62% of the variation in charges,
+so it is the strongest factor so far. Next step is a regression
+to see what else matters once smoking is accounted for.
+
+# Log-linear regression
+
+```{r lm}
+model <- lm(log(charges) ~ age + bmi + children + smoker + sex + region,
+            data = df)
+summary(model)
+```
+
+- Model explains about 77% of the variation in log charges (adj. R2 = 0.767).
+- Smoking is the biggest driver: smokers pay about 4.7x more, holding everything else constant.
+- Each extra child adds about 11%, each year of age about 3.5%, each BMI point about 1.3%.
+- Males pay about 7% less than females. Southeast and southwest are about 12 to 15% lower than northeast.
+- Northwest is not significant (p = 0.068).
+- Residual SE is 0.44 on the log scale, and some large outliers remain.
+
+## Why log?
+
+Charges are right-skewed and the spread grows with the mean, which breaks the assumptions of plain linear regression. Compare the diagnostics.
+
+```{r diagnostics, fig.height=7}
+m_raw <- lm(charges ~ age + bmi + children + smoker + sex + region, data = df)
+
+par(mfrow = c(2, 2))
+plot(m_raw)
+plot(model)
+par(mfrow = c(1, 1))
+```
+
+# Gamma GLM
+
+```{r glm}
+glm_model <- glm(charges ~ age + bmi + children + smoker + sex + region,
+                 data = df,
+                 family = Gamma(link = "log"))
+summary(glm_model)
+
+# percent effects
+round((exp(coef(glm_model)) - 1) * 100, 1)
+
+# pseudo R-squared
+1 - glm_model$deviance / glm_model$null.deviance
+```
+
+- Pseudo R2 = 0.68 (1 - residual deviance / null deviance). AIC = 26,379.
+- Smoker is the biggest driver: smokers pay about 4.5x more, holding everything else constant.
+- Each extra child adds about 9%, each year of age about 3%, each BMI point about 1.4%.
+- Southeast and southwest are about 13% lower than northeast (both significant).
+- Sex and northwest are not significant (p = 0.129 and 0.281).
+- Results match the log-lm model, so conclusions don't depend on the method.
+
+# Log-linear vs GLM
+
+Both models agree on the story: smoking is the biggest driver, then
+children, age and BMI, and the southern regions pay less.
+The GLM gives slightly smaller effects because it works on average dollars.
+The only real difference is sex: significant in the log-linear model but not in the GLM, so it is a weak effect.
+Log-linear is simpler to explain. GLM is better for predicting dollar amounts.
+
+# Conclusion 
+
+Smoking is the biggest driver of insurance charges in this dataset. Smokers pay about 4.5 to 4.7x more than non-smokers, holding everything else constant. On its own, smoking explains about 62% of the variation in charges.
+
+Age, BMI, and number of children also raise charges. Each year of age adds about 3%, each BMI point about 1.4%, and each child about 9 to 11%. Southeast and southwest are about 13% cheaper than northeast.
+
+Sex and the northwest region had no clear effect. Sex was significant in the log-linear model but not in the Gamma GLM, so it is a weak effect at best.
+
+Charges are right-skewed, so I modeled them on a log scale. The log-linear model (adj. R2 = 0.77) and the Gamma GLM (pseudo R2 = 0.68) gave the same story, so the conclusions do not depend on the method.
+
+Limits: these are associations, not proof of cause, and some large outliers remain that the models do not explain well.
